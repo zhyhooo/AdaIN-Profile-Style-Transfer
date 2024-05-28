@@ -61,9 +61,9 @@ def main():
 			if torch.cuda.is_available() and opt.cuda:
 				content_sample = content_sample.cuda()
 				style_sample = style_sample.cuda()
-			loss_content, loss_style = net([content_sample, style_sample])
+			loss_content, loss_style, loss_consist, loss_sparse = net([content_sample, style_sample])
 
-			loss_tot = loss_content + 10 * loss_style
+			loss_tot = loss_content + 10 * loss_style + loss_consist + loss_sparse
 			loss_tot.backward()
 			decoder_optimizer.step()
 			running_loss += loss_tot.item() * style_sample.size(0)
@@ -89,7 +89,8 @@ def main():
 								'running_losses': running_losses, 'it': it}
 		torch.save(check_point, opt.checkpoints_dir + '/G_%d.pth' % (epoch))
 		torch.save(net.decoder.state_dict(), opt.model+ '/decoder_%d.pth' % (epoch))
-		np.savetxt("running_losses", running_losses, fmt='%i,%f')						
+		np.savetxt("running_losses", running_losses, fmt='%i,%f')
+
 if __name__ == '__main__':
 	main()
 

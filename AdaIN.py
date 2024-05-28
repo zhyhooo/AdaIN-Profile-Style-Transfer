@@ -1,32 +1,13 @@
-import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 
 mse_criterion = nn.MSELoss()
-def calc_mean_std(feat, eps=1e-5):
-	size = feat.size()
-	assert(len(size)==4)
-	N, C = size[:2]
-	feat_var = feat.view(N, C, -1).var(dim=2) +eps
-	feat_std = feat_var.sqrt().view(N, C, 1, 1)
-	feat_mean = feat.view(N, C, -1).mean(dim=2).view(N, C, 1, 1)
-	return feat_mean, feat_std
 
-def calc_content_loss(input_im, target):
-	assert (input_im.size() == target.size())
-	assert (target.requires_grad is False)
-	return mse_criterion(input_im, target)
-
-def calc_style_loss(input_im, target):
-	assert (input_im.size() == target.size())
-	assert (target.requires_grad is False)
-	input_mean, input_std = calc_mean_std(input_im)
-	target_mean, target_std = calc_mean_std(target)
-	return mse_criterion(input_mean, target_mean) + \
-			mse_criterion(input_std, target_std)
+def facemask(input_image):
+	#todo: add mask
+	return input_image
 
 
 vggnet = nn.Sequential(
@@ -103,8 +84,6 @@ class AdaIN(nn.Module):
 		return out
 
 
-
-
 class StyleTransferNet(nn.Module):
 	def __init__(self, vgg_model):
 		super().__init__()
@@ -112,7 +91,7 @@ class StyleTransferNet(nn.Module):
 		vggnet.load_state_dict(vgg_model)
 
 		self.encoder = nn.Sequential(
-			nn.Conv2d(3, 3, kernel_size=(1,1), stride= (1, 1)),
+			nn.Conv2d(3, 3, kernel_size=(1, 1), stride=(1, 1)),
 			nn.Conv2d(3, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True),
 
@@ -123,14 +102,12 @@ class StyleTransferNet(nn.Module):
 			nn.Conv2d(64, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True),
 
-
 			nn.Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True),
 			nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False),
-			
+
 			nn.Conv2d(128, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True),
-
 
 			nn.Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True),
@@ -139,15 +116,15 @@ class StyleTransferNet(nn.Module):
 			nn.Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True),
 			nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False),
-			
+
 			nn.Conv2d(256, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True)
-			)
+		)
 
 		self.encoder.load_state_dict(vggnet[:21].state_dict())
 		for parameter in self.encoder.parameters():
 			parameter.requires_grad = False
-			
+
 		self.decoder = nn.Sequential(
 			nn.Conv2d(512, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 			nn.ReLU(inplace=True),
@@ -173,53 +150,58 @@ class StyleTransferNet(nn.Module):
 			nn.ReLU(inplace=True),
 			nn.Conv2d(64, 3, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1), padding_mode='reflect'),
 
-			)
+		)
 		self.adaIN = AdaIN()
 		self.mse_criterion = nn.MSELoss()
-
-
-
 
 	def forward(self, x, alpha=1.0):
 
 		content_img = x[0]
 		style_img = x[1]
+		M = facemask(content_img)
 
 		encode_content = self.encoder(content_img)
 		encode_style = self.encoder(style_img)
 
-		encode_out = self.adaIN(encode_content, encode_style)
-		
+		t = self.adaIN(encode_content, encode_style)
 
 		if self.training:
-			gen_img = self.decoder(encode_out)
-			encode_gen = self.encoder(gen_img)
+			Tx_s = self.decoder(t)
+			encode_gen_t = self.encoder(Tx_s)
 
 			fm11_style = self.encoder[:3](style_img)
-			fm11_gen = self.encoder[:3](gen_img)
+			fm11_gen = self.encoder[:3](Tx_s)
 
 			fm21_style = self.encoder[3:8](fm11_style)
 			fm21_gen = self.encoder[3:8](fm11_gen)
 
 			fm31_style = self.encoder[8:13](fm21_style)
 			fm31_gen = self.encoder[8:13](fm21_gen)
-			
-			loss_content = self.mse_criterion(encode_gen, encode_out)
 
-			loss_style = self.mse_criterion(torch.mean(fm11_gen, dim=[2,3]), torch.mean(fm11_style, dim=[2,3])) +	\
-						self.mse_criterion(torch.mean(fm21_gen, dim=[2,3]), torch.mean(fm21_style, dim=[2,3])) +	\
-						self.mse_criterion(torch.mean(fm31_gen, dim=[2,3]), torch.mean(fm31_style, dim=[2,3])) +	\
-						self.mse_criterion(torch.mean(encode_gen, dim=[2,3]), torch.mean(encode_style, dim=[2,3])) +	\
-						self.mse_criterion(torch.std(fm11_gen, dim=[2,3]), torch.std(fm11_style, dim=[2,3])) +	\
-						self.mse_criterion(torch.std(fm21_gen, dim=[2,3]), torch.std(fm21_style, dim=[2,3])) +	\
-						self.mse_criterion(torch.std(fm31_gen, dim=[2,3]), torch.std(fm31_style, dim=[2,3])) +	\
-						self.mse_criterion(torch.std(encode_gen, dim=[2,3]), torch.std(encode_style, dim=[2,3])) 
+			loss_content = self.mse_criterion(encode_gen_t, t)
 
-			return loss_content, loss_style
+			loss_style = self.mse_criterion(torch.mean(fm11_gen, dim=[2, 3]), torch.mean(fm11_style, dim=[2, 3])) + \
+						 self.mse_criterion(torch.mean(fm21_gen, dim=[2, 3]), torch.mean(fm21_style, dim=[2, 3])) + \
+						 self.mse_criterion(torch.mean(fm31_gen, dim=[2, 3]), torch.mean(fm31_style, dim=[2, 3])) + \
+						 self.mse_criterion(torch.mean(encode_gen_t, dim=[2, 3]),
+											torch.mean(encode_style, dim=[2, 3])) + \
+						 self.mse_criterion(torch.std(fm11_gen, dim=[2, 3]), torch.std(fm11_style, dim=[2, 3])) + \
+						 self.mse_criterion(torch.std(fm21_gen, dim=[2, 3]), torch.std(fm21_style, dim=[2, 3])) + \
+						 self.mse_criterion(torch.std(fm31_gen, dim=[2, 3]), torch.std(fm31_style, dim=[2, 3])) + \
+						 self.mse_criterion(torch.std(encode_gen_t, dim=[2, 3]), torch.std(encode_style, dim=[2, 3]))
+			# self-consistency loss
+			encode_ss = self.adaIN(encode_style, encode_style)
+			Ts_s = self.decoder(encode_ss)
+			loss_consist = self.mse_criterion(Ts_s, style_img)
+			# compositional sparsity loss
+			loss_sparse = torch.sum(torch.mul(M, (1 - Tx_s)))
+
+			return loss_content, loss_style, loss_consist, loss_sparse
+
 		else:
-			encode_out = alpha * encode_out + (1-alpha)* encode_content
-			gen_img = self.decoder(encode_out)
-			return gen_img
+			encode_out = alpha * t + (1 - alpha) * encode_content
+			Tx_s = self.decoder(encode_out)
+			return Tx_s
 
 
 
